@@ -344,3 +344,169 @@ Consumer (to get it immediately)
 
 Producer of a different type (to continue interleaving)
 
+
+
+---
+
+#  Variant 3 – Two message types (FIFO consumption by type)
+
+## Specification
+
+```python
+Monitor Prod_Cons:
+    put(data: elem_t, type: int)   # type ∈ {0, 1}
+    get(type: int) -> elem_t
+```
+
+* Producers deposit messages labeled with `type`.
+* Consumers specify the `type` of message they want to withdraw.
+* Consumption still follows **FIFO**: only the **oldest** message in the buffer can be consumed.
+* **Priority:** on **producers** (as stated by the professor).
+
+---
+
+## State and condition variables
+
+| Variable      | Meaning                                                  |
+| ------------- | -------------------------------------------------------- |
+| `tab[0..N-1]` | Circular buffer storing messages and their types         |
+| `in`, `out`   | Positions for next put / next get                        |
+| `count`       | Number of occupied slots                                 |
+| `N`           | Buffer capacity                                          |
+| `c_prod`      | Condition variable for waiting producers                 |
+| `c_cons[2]`   | Condition variables for consumers (one per message type) |
+
+---
+
+## Blocking and Unblocking conditions
+
+| Process            | **Blocking condition**                                                              | **Unblocking condition**                                                                                                                                                          |
+| ------------------ | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Producer**       | Buffer **full** (`count == N`)                                                      | A message was **consumed** (→ one empty cell available)                                                                                                                           |
+| **Consumer(type)** | Buffer **empty** (`count == 0`) **or** the **oldest element type ≠ requested type** | (1) A message of their type becomes **oldest** after a `put` or `get`, **and**<br>(2) either the buffer was empty before, or no producer is currently waiting (producer priority) |
+
+In summary:
+
+* Producers block only when the buffer is full.
+* Consumers block either because there’s nothing to consume or because the oldest message isn’t of their desired type.
+* A consumer wakes up only when the **oldest message** matches their requested type.
+* Producers have higher priority when both could be unblocked.
+
+---
+
+## Monitor pseudo-code
+
+```python
+Monitor Prod_Cons:
+    tab[0..N-1]
+    in = 0
+    out = 0
+    count = 0
+    Condition c_prod, c_cons[2]
+
+    put(value, type):
+        while count == N:
+            c_prod.wait()
+
+        was_empty = (count == 0)
+        tab[in] = (copy(value), type)
+        in = (in + 1) % N
+        count += 1
+
+        # If buffer was empty before, a consumer might proceed
+        if was_empty:
+            c_cons[type].signal()
+
+    get(type) -> value:
+        while count == 0 or tab[out].type != type:
+            c_cons[type].wait()
+
+        value = copy(tab[out].value)
+        out = (out + 1) % N
+        count -= 1
+
+        # Priority to producers
+        if c_prod.has_waiters():
+            c_prod.signal()
+        elif count != 0:
+            c_cons[tab[out].type].signal()
+
+        return value
+```
+
+---
+
+# Variant 4 – Producers produce twice in a row (bonus)
+
+> Only steps 1–3 required.  
+> Priority: **Consumers** in case of conflict.
+
+---
+
+## Specification
+
+```python
+Monitor Prod_Cons:
+    put(data: elem_t, id: int)
+    get() -> elem_t
+```
+
+* Each producer, once it starts producing, **must produce twice consecutively** before another producer can act.
+* Consumers remove messages FIFO.
+* When both sides can proceed, **consumers have priority**.
+
+---
+
+## State and condition variables
+
+| Variable                  | Meaning                                                                                                                                   |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `tab[0..N-1]`             | Circular buffer for messages                                                                                                              |
+| `in`, `out`, `count`, `N` | Standard circular buffer management                                                                                                       |
+| `stride`                  | Indicates which producer must produce next:<br>• `-1`: free (any producer can produce)<br>• `id`: producer with that id must produce next |
+| `c_prod`                  | Condition for waiting producers (full buffer or wrong turn)                                                                               |
+| `c_cons`                  | Condition for waiting consumers (empty buffer)                                                                                            |
+
+---
+
+## Blocking and Unblocking conditions
+
+| Process          | **Blocking condition**                                                                                           | **Unblocking condition**                                                                                                                                |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Producer(id)** | (1) Buffer **full** (`count == N`) **OR**<br>(2) Another producer has the turn (`stride != -1 and stride != id`) | (1) A message **consumed** (frees space), or<br>(2) `stride` becomes **-1** (their turn is free), or<br>(3) Their **own turn** resumes (`stride == id`) |
+| **Consumer**     | Buffer **empty** (`count == 0`)                                                                                  | A producer **produces** a message (buffer not empty)                                                                                                    |
+
+---
+
+## State updates (conceptual behavior)
+
+| Event                           | State changes        | Notes                                                          |
+| ------------------------------- | -------------------- | -------------------------------------------------------------- |
+| **First `put` by producer `P`** | Sets `stride = P`    | Locks production turn to `P` for next put                      |
+| **Second `put` by same `P`**    | Resets `stride = -1` | Frees turn for any producer                                    |
+| **`get()`**                     | Removes one element  | May wake producers if space available                          |
+| **Conflict resolution**         | Consumer priority    | If both consumer and producer can proceed, wake consumer first |
+
+---
+
+## Monitor logic summary (no full code required)
+
+1. **State variables**: `tab`, `in`, `out`, `count`, `stride`, `c_prod`, `c_cons`
+2. **Blocking / unblocking**: summarized in the table above
+3. **Execution flow**:
+
+   * Each producer must produce two consecutive elements.
+   * After its second production, another producer may take over.
+   * Consumers consume in FIFO order, with **priority** over producers.
+
+---
+
+### Optional diagram (mental model)
+
+```
+Producer A: put1 → put2 → yield turn
+Producer B: (waits) → put1 → put2 → yield turn
+Consumers: always allowed to read FIFO, if not empty
+```
+
+---
