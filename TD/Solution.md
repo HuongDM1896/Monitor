@@ -770,3 +770,4 @@ Monitor Reader_Writer:
 
 ---
 
+Check [Exercice 1.md](Exercice%201.md) for others exer.
