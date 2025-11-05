@@ -510,3 +510,255 @@ Consumers: always allowed to read FIFO, if not empty
 ```
 
 ---
+
+
+---
+
+# Exercise 2 – Monitor `Prod_Cons`
+
+---
+
+## Variant 1 – Single message type (basic FIFO)
+
+### **Specification**
+
+```python
+Monitor Prod_Cons:
+    put(data: elem_t)
+    get() -> elem_t
+```
+
+* **Producers** put messages into a bounded FIFO buffer.
+* **Consumers** get messages from the buffer in FIFO order.
+* **Priority:** given to **producers** (as specified by the professor).
+
+---
+
+### **State and condition variables**
+
+| Variable      | Meaning                                  |
+| ------------- | ---------------------------------------- |
+| `tab[0..N-1]` | Circular buffer of elements              |
+| `in`, `out`   | Indices for next `put` / next `get`      |
+| `count`       | Number of occupied slots                 |
+| `N`           | Buffer capacity                          |
+| `c_prod`      | Condition variable for waiting producers |
+| `c_cons`      | Condition variable for waiting consumers |
+
+---
+
+### **Blocking and Unblocking conditions**
+
+| Process      | **Blocking condition**          | **Unblocking condition**                                |
+| ------------ | ------------------------------- | ------------------------------------------------------- |
+| **Producer** | Buffer **full** (`count == N`)  | A message was **consumed** (→ one slot becomes free)    |
+| **Consumer** | Buffer **empty** (`count == 0`) | A message was **produced** (→ buffer becomes non-empty) |
+
+**Producers have priority:**
+If both can proceed, **signal producer first**.
+
+---
+
+### **Monitor pseudo-code**
+
+```python
+Monitor Prod_Cons:
+    tab[0..N-1]
+    in = 0
+    out = 0
+    count = 0
+    Condition c_prod, c_cons
+
+    put(value):
+        while count == N:
+            c_prod.wait()
+
+        tab[in] = copy(value)
+        in = (in + 1) % N
+        count += 1
+
+        # Signal a consumer if buffer was empty before
+        if count == 1:
+            c_cons.signal()
+
+    get() -> value:
+        while count == 0:
+            c_cons.wait()
+
+        value = copy(tab[out])
+        out = (out + 1) % N
+        count -= 1
+
+        # Producer priority
+        if c_prod.has_waiters():
+            c_prod.signal()
+        elif count > 0:
+            c_cons.signal()
+
+        return value
+```
+
+---
+
+## Variant 2 – Two message types (independent FIFOs per type)
+
+### **Specification**
+
+```python
+Monitor Prod_Cons:
+    put(data: elem_t, type: int)   # type ∈ {0, 1}
+    get(type: int) -> elem_t
+```
+
+* Each **type** of message has its **own FIFO queue**.
+* Consumers specify which **type** they want.
+* **Producers** only block when their own queue is full.
+* **Priority:** on **producers** (same as Variant 1).
+
+---
+
+### **State and condition variables**
+
+| Variable                | Meaning                                     |
+| ----------------------- | ------------------------------------------- |
+| `tab[type][0..N-1]`     | Two circular buffers (one per message type) |
+| `in[type]`, `out[type]` | Indices for each buffer                     |
+| `count[type]`           | Occupied slots for each type                |
+| `N`                     | Capacity per buffer                         |
+| `c_prod[2]`             | One condition variable per producer type    |
+| `c_cons[2]`             | One condition variable per consumer type    |
+
+---
+
+### **Blocking and Unblocking conditions**
+
+| Process            | **Blocking condition**                    | **Unblocking condition**            |
+| ------------------ | ----------------------------------------- | ----------------------------------- |
+| **Producer(type)** | Its buffer **full** (`count[type] == N`)  | A message of same type **consumed** |
+| **Consumer(type)** | Its buffer **empty** (`count[type] == 0`) | A message of same type **produced** |
+
+Independent queues mean **no cross-type blocking**.
+
+---
+
+### **Monitor pseudo-code**
+
+```python
+Monitor Prod_Cons:
+    tab[2][0..N-1]
+    in[2] = {0, 0}
+    out[2] = {0, 0}
+    count[2] = {0, 0}
+    Condition c_prod[2], c_cons[2]
+
+    put(value, type):
+        while count[type] == N:
+            c_prod[type].wait()
+
+        tab[type][in[type]] = copy(value)
+        in[type] = (in[type] + 1) % N
+        count[type] += 1
+
+        if count[type] == 1:
+            c_cons[type].signal()
+
+    get(type) -> value:
+        while count[type] == 0:
+            c_cons[type].wait()
+
+        value = copy(tab[type][out[type]])
+        out[type] = (out[type] + 1) % N
+        count[type] -= 1
+
+        # Producer priority
+        if c_prod[type].has_waiters():
+            c_prod[type].signal()
+        elif count[type] > 0:
+            c_cons[type].signal()
+
+        return value
+```
+
+---
+
+## Variant 3 – Two message types (FIFO consumption by type)
+
+### **Specification**
+
+```python
+Monitor Prod_Cons:
+    put(data: elem_t, type: int)   # type ∈ {0, 1}
+    get(type: int) -> elem_t
+```
+
+* Producers deposit messages labeled with `type`.
+* Consumers specify the `type` of message they want to withdraw.
+* **Single shared FIFO**, messages stay in arrival order.
+* **FIFO constraint:** only the **oldest** message in the buffer can be consumed.
+* **Priority:** on **producers** (same rule).
+
+---
+
+### **State and condition variables**
+
+| Variable      | Meaning                                                  |
+| ------------- | -------------------------------------------------------- |
+| `tab[0..N-1]` | Circular buffer storing messages and their types         |
+| `in`, `out`   | Positions for next put / next get                        |
+| `count`       | Number of occupied slots                                 |
+| `N`           | Buffer capacity                                          |
+| `c_prod`      | Condition variable for waiting producers                 |
+| `c_cons[2]`   | Condition variables for consumers (one per message type) |
+
+---
+
+### **Blocking and Unblocking conditions**
+
+| Process            | **Blocking condition**                                                              | **Unblocking condition**                                                                                                                                                          |
+| ------------------ | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Producer**       | Buffer **full** (`count == N`)                                                      | A message was **consumed** (→ one empty cell available)                                                                                                                           |
+| **Consumer(type)** | Buffer **empty** (`count == 0`) **or** the **oldest element type ≠ requested type** | (1) A message of their type becomes **oldest** after a `put` or `get`, **and**<br>(2) either the buffer was empty before, or no producer is currently waiting (producer priority) |
+
+---
+
+### **Monitor pseudo-code**
+
+```python
+Monitor Prod_Cons:
+    tab[0..N-1]
+    in = 0
+    out = 0
+    count = 0
+    Condition c_prod, c_cons[2]
+
+    put(value, type):
+        while count == N:
+            c_prod.wait()
+
+        was_empty = (count == 0)
+        tab[in] = (copy(value), type)
+        in = (in + 1) % N
+        count += 1
+
+        # If buffer was empty before, a consumer might proceed
+        if was_empty:
+            c_cons[type].signal()
+
+    get(type) -> value:
+        while count == 0 or tab[out].type != type:
+            c_cons[type].wait()
+
+        value = copy(tab[out].value)
+        out = (out + 1) % N
+        count -= 1
+
+        # Producer priority
+        if c_prod.has_waiters():
+            c_prod.signal()
+        elif count != 0:
+            c_cons[tab[out].type].signal()
+
+        return value
+```
+
+---
