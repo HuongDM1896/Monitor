@@ -513,252 +513,260 @@ Consumers: always allowed to read FIFO, if not empty
 
 
 ---
-
-# Exercise 2 – Monitor `Prod_Cons`
+Perfect — here’s the **Reader–Writer Monitor (Exercise 2)** fully rewritten in **English**, formatted like your preferred `Prod_Cons` example: clear sections, tables, and explanations for **all three variants**.
 
 ---
 
-## Variant 1 – Single message type (basic FIFO)
+#  Exercise 2 – Reader–Writer Monitor
+
+---
+
+## Concept
+
+The **Reader–Writer problem** manages concurrent access to a shared resource such as a file or database:
+
+* **Readers** can access the resource **simultaneously** (parallel reads allowed).
+* **Writers** require **exclusive access** (no one else can read or write).
+
+To achieve true parallelism, **the reading and writing actions must occur outside the monitor**;
+the monitor only controls access to the shared resource.
+
+---
+
+## Variant 1 – Equal Priority (Readers grouped together)
 
 ### **Specification**
 
 ```python
-Monitor Prod_Cons:
-    put(data: elem_t)
-    get() -> elem_t
+Monitor Reader_Writer:
+    startRead()
+    endRead()
+    startWrite()
+    endWrite()
 ```
-
-* **Producers** put messages into a bounded FIFO buffer.
-* **Consumers** get messages from the buffer in FIFO order.
-* **Priority:** given to **producers** (as specified by the professor).
 
 ---
 
 ### **State and condition variables**
 
-| Variable      | Meaning                                  |
-| ------------- | ---------------------------------------- |
-| `tab[0..N-1]` | Circular buffer of elements              |
-| `in`, `out`   | Indices for next `put` / next `get`      |
-| `count`       | Number of occupied slots                 |
-| `N`           | Buffer capacity                          |
-| `c_prod`      | Condition variable for waiting producers |
-| `c_cons`      | Condition variable for waiting consumers |
+| Variable    | Meaning                                             |
+| ----------- | --------------------------------------------------- |
+| `writing`   | Boolean: indicates if a writer is currently writing |
+| `nb_reader` | Number of readers currently reading                 |
+| `c_reader`  | Condition variable for waiting readers              |
+| `c_writer`  | Condition variable for waiting writers              |
 
 ---
 
 ### **Blocking and Unblocking conditions**
 
-| Process      | **Blocking condition**          | **Unblocking condition**                                |
-| ------------ | ------------------------------- | ------------------------------------------------------- |
-| **Producer** | Buffer **full** (`count == N`)  | A message was **consumed** (→ one slot becomes free)    |
-| **Consumer** | Buffer **empty** (`count == 0`) | A message was **produced** (→ buffer becomes non-empty) |
+| Process    | **Blocking condition**                                                                         | **Unblocking condition**                                                 |
+| ---------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| **Reader** | A writer is writing (`writing == True`)                                                        | A writer finishes writing (→ no writer active)                           |
+| **Writer** | A writer is writing **or** at least one reader is reading (`writing == True or nb_reader > 0`) | Either the last reader finishes reading, or another writer just finished |
 
-**Producers have priority:**
-If both can proceed, **signal producer first**.
+ **Interpretation:**
+
+* Once **a reader starts**, all new readers are allowed to join in (parallel reading).
+* **Writers wait** until all readers are done.
+* When a writer finishes, it **prefers other writers** (to avoid writer starvation).
 
 ---
 
 ### **Monitor pseudo-code**
 
 ```python
-Monitor Prod_Cons:
-    tab[0..N-1]
-    in = 0
-    out = 0
-    count = 0
-    Condition c_prod, c_cons
+Monitor Reader_Writer:
+    writing = False
+    nb_reader = 0
+    Condition c_reader, c_writer
 
-    put(value):
-        while count == N:
-            c_prod.wait()
+    startRead():
+        while writing:
+            c_reader.wait()
+        nb_reader += 1
+        c_reader.signal()   # Allow other readers to join
 
-        tab[in] = copy(value)
-        in = (in + 1) % N
-        count += 1
+    endRead():
+        nb_reader -= 1
+        if nb_reader == 0:
+            c_writer.signal()   # Let a writer proceed
 
-        # Signal a consumer if buffer was empty before
-        if count == 1:
-            c_cons.signal()
+    startWrite():
+        while writing or nb_reader > 0:
+            c_writer.wait()
+        writing = True
 
-    get() -> value:
-        while count == 0:
-            c_cons.wait()
-
-        value = copy(tab[out])
-        out = (out + 1) % N
-        count -= 1
-
-        # Producer priority
-        if c_prod.has_waiters():
-            c_prod.signal()
-        elif count > 0:
-            c_cons.signal()
-
-        return value
+    endWrite():
+        writing = False
+        if not c_writer.empty():
+            c_writer.signal()   # Prefer writer
+        else:
+            c_reader.signal()   # Otherwise, allow readers
 ```
 
 ---
 
-## Variant 2 – Two message types (independent FIFOs per type)
+## Variant 2 – Writer Priority
 
-### **Specification**
-
-```python
-Monitor Prod_Cons:
-    put(data: elem_t, type: int)   # type ∈ {0, 1}
-    get(type: int) -> elem_t
-```
-
-* Each **type** of message has its **own FIFO queue**.
-* Consumers specify which **type** they want.
-* **Producers** only block when their own queue is full.
-* **Priority:** on **producers** (same as Variant 1).
+Writers should not wait indefinitely while readers continuously enter.
+Therefore, **as soon as a writer requests access**, **no new reader** may start.
 
 ---
 
 ### **State and condition variables**
 
-| Variable                | Meaning                                     |
-| ----------------------- | ------------------------------------------- |
-| `tab[type][0..N-1]`     | Two circular buffers (one per message type) |
-| `in[type]`, `out[type]` | Indices for each buffer                     |
-| `count[type]`           | Occupied slots for each type                |
-| `N`                     | Capacity per buffer                         |
-| `c_prod[2]`             | One condition variable per producer type    |
-| `c_cons[2]`             | One condition variable per consumer type    |
+Same as Variant 1:
+
+| Variable    | Meaning                                        |
+| ----------- | ---------------------------------------------- |
+| `writing`   | Boolean: whether a writer is currently writing |
+| `nb_reader` | Number of readers currently reading            |
+| `c_reader`  | Condition variable for waiting readers         |
+| `c_writer`  | Condition variable for waiting writers         |
 
 ---
 
 ### **Blocking and Unblocking conditions**
 
-| Process            | **Blocking condition**                    | **Unblocking condition**            |
-| ------------------ | ----------------------------------------- | ----------------------------------- |
-| **Producer(type)** | Its buffer **full** (`count[type] == N`)  | A message of same type **consumed** |
-| **Consumer(type)** | Its buffer **empty** (`count[type] == 0`) | A message of same type **produced** |
+| Process    | **Blocking condition**                                              | **Unblocking condition**                                       |
+| ---------- | ------------------------------------------------------------------- | -------------------------------------------------------------- |
+| **Reader** | A writer is writing **or** there is **at least one writer waiting** | A writer finishes writing **and** no writer remains waiting    |
+| **Writer** | A writer is writing **or** some reader is reading                   | Either last reader finished reading or another writer finished |
 
-Independent queues mean **no cross-type blocking**.
+ **Interpretation:**
+
+* Readers block if **any writer is waiting** (to prevent data from becoming stale).
+* Once writers start requesting, they **get priority**.
+* Still, **no preemption**: current readers must finish first.
 
 ---
 
 ### **Monitor pseudo-code**
 
 ```python
-Monitor Prod_Cons:
-    tab[2][0..N-1]
-    in[2] = {0, 0}
-    out[2] = {0, 0}
-    count[2] = {0, 0}
-    Condition c_prod[2], c_cons[2]
+Monitor Reader_Writer:
+    writing = False
+    nb_reader = 0
+    Condition c_reader, c_writer
 
-    put(value, type):
-        while count[type] == N:
-            c_prod[type].wait()
+    startRead():
+        while writing or not c_writer.empty():  # writer priority
+            c_reader.wait()
+        nb_reader += 1
+        c_reader.signal()
 
-        tab[type][in[type]] = copy(value)
-        in[type] = (in[type] + 1) % N
-        count[type] += 1
+    endRead():
+        nb_reader -= 1
+        if nb_reader == 0:
+            c_writer.signal()
 
-        if count[type] == 1:
-            c_cons[type].signal()
+    startWrite():
+        while writing or nb_reader > 0:
+            c_writer.wait()
+        writing = True
 
-    get(type) -> value:
-        while count[type] == 0:
-            c_cons[type].wait()
-
-        value = copy(tab[type][out[type]])
-        out[type] = (out[type] + 1) % N
-        count[type] -= 1
-
-        # Producer priority
-        if c_prod[type].has_waiters():
-            c_prod[type].signal()
-        elif count[type] > 0:
-            c_cons[type].signal()
-
-        return value
+    endWrite():
+        writing = False
+        if not c_writer.empty():
+            c_writer.signal()
+        else:
+            c_reader.signal()
 ```
+
+**Drawback:**
+
+* This version can lead to **reader starvation** if writers keep arriving continuously.
 
 ---
 
-## Variant 3 – Two message types (FIFO consumption by type)
+## Variant 3 – Fair Access (Balanced Priority)
 
-### **Specification**
+### **Motivation**
 
-```python
-Monitor Prod_Cons:
-    put(data: elem_t, type: int)   # type ∈ {0, 1}
-    get(type: int) -> elem_t
-```
+* **Variant 1:** possible **writer starvation** — readers can keep entering indefinitely.
+* **Variant 2:** possible **reader starvation** — writers always win.
+* **Variant 3:** aims for **fairness**:
 
-* Producers deposit messages labeled with `type`.
-* Consumers specify the `type` of message they want to withdraw.
-* **Single shared FIFO**, messages stay in arrival order.
-* **FIFO constraint:** only the **oldest** message in the buffer can be consumed.
-* **Priority:** on **producers** (same rule).
+  * When a writer finishes, **all currently waiting readers** may proceed together.
+  * New readers arriving **after that moment** must again respect writer priority.
 
 ---
 
 ### **State and condition variables**
 
-| Variable      | Meaning                                                  |
-| ------------- | -------------------------------------------------------- |
-| `tab[0..N-1]` | Circular buffer storing messages and their types         |
-| `in`, `out`   | Positions for next put / next get                        |
-| `count`       | Number of occupied slots                                 |
-| `N`           | Buffer capacity                                          |
-| `c_prod`      | Condition variable for waiting producers                 |
-| `c_cons[2]`   | Condition variables for consumers (one per message type) |
+| Variable    | Meaning                                                              |
+| ----------- | -------------------------------------------------------------------- |
+| `writing`   | Whether a writer is currently writing                                |
+| `nb_reader` | Number of readers currently reading                                  |
+| `cascade`   | Boolean: indicates if we are allowing a chain of readers (“cascade”) |
+| `c_reader`  | Condition variable for readers                                       |
+| `c_writer`  | Condition variable for writers                                       |
 
 ---
 
 ### **Blocking and Unblocking conditions**
 
-| Process            | **Blocking condition**                                                              | **Unblocking condition**                                                                                                                                                          |
-| ------------------ | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Producer**       | Buffer **full** (`count == N`)                                                      | A message was **consumed** (→ one empty cell available)                                                                                                                           |
-| **Consumer(type)** | Buffer **empty** (`count == 0`) **or** the **oldest element type ≠ requested type** | (1) A message of their type becomes **oldest** after a `put` or `get`, **and**<br>(2) either the buffer was empty before, or no producer is currently waiting (producer priority) |
+| Process    | **Blocking condition**                                                      | **Unblocking condition**                                                      |
+| ---------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| **Reader** | A writer is writing **or** a writer is waiting **and no cascade is active** | A writer finishes writing (→ cascade starts) or another reader starts reading |
+| **Writer** | A writer is writing **or** some reader is reading                           | A writer finishes **and no reader is waiting**, or last reader finishes       |
+
+**Interpretation:**
+
+* When a writer finishes, **existing waiting readers** are allowed to enter together (cascade = True).
+* New readers arriving **after** that point must wait again if there’s a writer waiting.
+* Prevents both **reader** and **writer** starvation.
 
 ---
 
 ### **Monitor pseudo-code**
 
 ```python
-Monitor Prod_Cons:
-    tab[0..N-1]
-    in = 0
-    out = 0
-    count = 0
-    Condition c_prod, c_cons[2]
+Monitor Reader_Writer:
+    writing = False
+    nb_reader = 0
+    cascade = False
+    Condition c_reader, c_writer
 
-    put(value, type):
-        while count == N:
-            c_prod.wait()
+    startRead():
+        if writing or (not c_writer.empty() and not cascade):
+            c_reader.wait()
+        nb_reader += 1
+        if not c_reader.empty():
+            cascade = True
+            c_reader.signal()   # allow more readers to join
+        else:
+            cascade = False
 
-        was_empty = (count == 0)
-        tab[in] = (copy(value), type)
-        in = (in + 1) % N
-        count += 1
+    endRead():
+        nb_reader -= 1
+        if nb_reader == 0:
+            c_writer.signal()
 
-        # If buffer was empty before, a consumer might proceed
-        if was_empty:
-            c_cons[type].signal()
+    startWrite():
+        while writing or nb_reader > 0:
+            c_writer.wait()
+        writing = True
 
-    get(type) -> value:
-        while count == 0 or tab[out].type != type:
-            c_cons[type].wait()
-
-        value = copy(tab[out].value)
-        out = (out + 1) % N
-        count -= 1
-
-        # Producer priority
-        if c_prod.has_waiters():
-            c_prod.signal()
-        elif count != 0:
-            c_cons[tab[out].type].signal()
-
-        return value
+    endWrite():
+        writing = False
+        if not c_reader.empty():
+            cascade = True
+            c_reader.signal()   # give chance to all waiting readers
+        else:
+            c_writer.signal()
 ```
 
 ---
+
+## Summary of Variants
+
+| Variant | Policy                       | Possible Starvation | Behavior                         |
+| ------- | ---------------------------- | ------------------- | -------------------------------- |
+| **1**   | Readers grouped, no priority | Writer starvation   | Simple but unfair to writers     |
+| **2**   | Writer priority              | Reader starvation   | Ensures data freshness           |
+| **3**   | Fair (balanced)              | None                | Alternates access between groups |
+
+---
+
