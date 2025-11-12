@@ -359,34 +359,42 @@ We also need
 
 ```python
 Monitor OrderManagement:
-    steps = [-1] * NB_COUNTERS
-    counters = init_counters(NB_COUNTERS)
-    Conditions c_outside, c_counter[NB_COUNTERS], c_employee[NB_STEPS]
+    # save current status of each counter
+    steps = [-1] * NB_COUNTERS # -1 for free counter
+    counters = init_counters(NB_COUNTERS) # init list of counter, each counter = 1 available order
+    Conditions c_outside, c_counter[NB_COUNTERS], c_employee[NB_STEPS] # conditions variables
+
+    # Customer side
     start_command(order):
-        while not (-1 in steps):
+    # customer can start order when the counter is free
+        while not (-1 in steps): # all counters are busy, not -1 -> need wait
             c_outside.wait()
-        counter = free.index(-1)
-        steps[counter] = 0
+        counter = free.index(-1) # find the free counter (-1 is free)
+        steps[counter] = 0 # set 1st step as 0, start order
         counters[counter] = order
-        c_employee[0].notify()
-        return counter
+        c_employee[0].notify() # let employee know that have order, can work
+        return counter # return id of counter to wait until order finished
 
     end_command(counter):
-        while step[counter] != NB_STEPS:
-            c_counter[counter].wait()
-        steps[counter] = -1
-        c_outside.notify()
-        
+    # remember the id of counter (see return above), wait there until the order finish
+        while step[counter] != NB_STEPS: # step not 4 (4 is last step)
+            c_counter[counter].wait() # wait until the counter done all the step
+        steps[counter] = -1 # free the step
+        c_outside.notify() # let other customer outside can come
+
+    # Employee side   
     start_step(step):
-        while not (step in steps):
-            c_employee[step].wait()
+    # the employee who does the "step" only works when the counter give the request of this step
+        while not (step in steps): # if no request this step
+            c_employee[step].wait() # wait
         return steps.index(step)
     
     end_step(counter):
-        steps[counter] += 1
-        new_step = steps[counter]
-        if new_step == NB_STEPS:
-            c_counter[counter].notify()
-        else:
-            c_employee[new_step].notify()
+    # employee finish their work in this step, move to next step
+        steps[counter] += 1 # counter give the request of next step -> +1
+        new_step = steps[counter] 
+        if new_step == NB_STEPS: # if the request = last step
+            c_counter[counter].notify() # counter tell the custom that the order done
+        else: # if request not last step
+            c_employee[new_step].notify() # let employee do the next step. 
 ```
